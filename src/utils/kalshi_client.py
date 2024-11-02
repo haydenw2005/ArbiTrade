@@ -40,7 +40,7 @@ class KalshiClient:
 
 
         headers = get_auth_headers(method, path, self.private_key, self.key_id)
-        log_debug(f"Debug - URL: {url} - Method: {method} - Path: {path} - Params: {params} - Headers: {headers}")
+        #log_debug(f"Debug - URL: {url} - Method: {method} - Path: {path} - Params: {params} - Headers: {headers}")
 
         response = requests.request(
             method=method,
@@ -87,15 +87,11 @@ class KalshiClient:
         params = {k: v for k, v in params.items() if v is not None}
         return self._make_request('GET', '/events', params=params, requires_auth=False)
 
-    def get_event(self, event_ticker: str) -> Dict:
-        """Get specific event details"""
-        return self._make_request('GET', f'/trade-api/v2/events/{event_ticker}')
-
     def get_market(self, market_ticker: str) -> Dict:
         """Get specific market details"""
         return self._make_request('GET', f'/trade-api/v2/markets/{market_ticker}')
 
-    def get_event_details(self, event_ticker: str, with_nested_markets: bool = True) -> Dict:
+    def get_event(self, event_ticker: str, with_nested_markets: bool = True) -> Dict:
         """Get detailed information about a specific event."""
         params = {
             'with_nested_markets': with_nested_markets

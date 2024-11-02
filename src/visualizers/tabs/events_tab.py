@@ -3,10 +3,12 @@ import pandas as pd
 from typing import List
 from st_aggrid import AgGrid, GridOptionsBuilder
 from st_aggrid.grid_options_builder import GridOptionsBuilder
+import asyncio
 
 from src.visualizers.components.api_parameters import render_api_parameters
 from src.data_collectors.kalshi_scraper import KalshiScraper
 from src.utils.logger import log_debug
+from src.research_tools.margin_examiner import MarginExaminer
 
 def convert_currency_to_float(value):
     """Convert currency string to float value."""
@@ -152,10 +154,16 @@ def render_events_tab():
     initialize_selection_state()
     initialize_cursor_state()
     
-    # Initialize show_research in session state if not present
+    # Initialize show_research and clear_filters in session state if not present
     if 'show_research' not in st.session_state:
         st.session_state.show_research = False
-    
+    if 'clear_filters_clicked' not in st.session_state:
+        st.session_state.clear_filters_clicked = False
+
+    # Function to handle clear filters click
+    def handle_clear_filters():
+        st.session_state.clear_filters_clicked = True
+
     # Add Research button in the header area
     col1, col2 = st.columns([6, 1])
     with col1:
@@ -187,39 +195,47 @@ def render_events_tab():
     )
     
     if not events_df.empty:
-        # Create sorting columns for relevant metrics only
-        events_df['market_value_sort'] = events_df['market_value'].apply(convert_currency_to_float)
-        events_df['volume_sort'] = events_df['volume'].apply(convert_currency_to_float)
+        # Convert volume and market_value directly to floats
+        events_df['market_value'] = events_df['market_value'].apply(convert_currency_to_float)
+        events_df['volume'] = events_df['volume'].apply(convert_currency_to_float)
         
         # Calculate total markets before filtering
         total_markets = events_df['market_count'].sum() if 'market_count' in events_df.columns else 0
         
         # Move filters into a collapsible section
         with st.expander("🔍 Filter Events", expanded=False):
-            # Add clear filters button in a column layout
+            # Check if clear filters was clicked and reset the session state
+            if st.session_state.clear_filters_clicked:
+                st.session_state.clear_filters_clicked = False
+                # Don't try to modify the widget states directly
+                search_events = ""
+                selected_category = "All"
+            else:
+                # Get the current filter values from session state or use defaults
+                search_events = st.session_state.get('search_filter', '')
+                selected_category = st.session_state.get('category_filter', 'All')
+
             categories = ['All'] + sorted(events_df['category'].unique().tolist())
             f_col1, f_col2 = st.columns([3, 3])
             
-            # Category filter with session state
+            # Category filter
             with f_col1:
                 selected_category = st.selectbox(
                     "Select Category:", 
                     categories,
-                    key="category_filter"
+                    key="category_filter",
+                    index=categories.index(selected_category)
                 )
                 
-            # Search filter with session state
+            # Search filter
             with f_col2:
                 search_events = st.text_input(
                     "Search events by title or ticker:",
+                    value=search_events,
                     key="search_filter"
                 )
 
-
-            if st.button("Clear Filters", type="secondary", key="clear_filters", use_container_width=True):
-                # Reset session state for filters
-                st.session_state.category_filter = 'All'
-                st.session_state.search_filter = ''
+            if st.button("Clear Filters", type="secondary", key="clear_filters", on_click=handle_clear_filters, use_container_width=True):
                 st.rerun()
             
           
@@ -283,21 +299,57 @@ def render_events_tab():
             selection_mode='multiple',
             use_checkbox=True,
             pre_selected_rows=[
-                idx for idx, ticker in enumerate(display_df['ticker'])
+                i for i, ticker in enumerate(display_df.index)
                 if ticker in st.session_state.selected_events
             ]
         )
+        
+        # Configure specific columns
+        gb.configure_column(
+            "checkbox",
+            headerName="",
+            pinned="left",
+            checkboxSelection=True,  # Only this column should have checkboxSelection
+            headerCheckboxSelection=True,
+            headerCheckboxSelectionFilteredOnly=True,
+            width=50,
+            minWidth=50,
+            maxWidth=50
+        )
+        
+        # Configure title column explicitly without checkbox
+        gb.configure_column(
+            "title",
+            headerName="Title",
+            width=300,
+            checkboxSelection=False  # Explicitly disable checkbox for title
+        )
+        
         gb.configure_default_column(
             min_column_width=100,
             resizable=True,
             sorteable=True
         )
+        
+        # Configure ticker column (now without checkbox)
         gb.configure_column(
             "ticker",
             headerName="Ticker",
-            pinned="left"
+            #pinned="left",
+            width='auto'
         )
+        
+        # Configure other specific columns
+        gb.configure_column(
+            "title",
+            headerName="Title",
+            width='auto'
+        )
+        
         grid_options = gb.build()
+
+        # Add checkbox column to display_df
+        display_df['checkbox'] = ''
 
         # Display the AgGrid
         grid_response = AgGrid(
@@ -307,35 +359,17 @@ def render_events_tab():
             fit_columns_on_grid_load=True,
             height=500,
             allow_unsafe_jscode=True,
-            key='event_grid'
+            key='event_grid',
+            reload_data=False
         )
 
-        # Update selected events in session state
-        selected_rows = grid_response.get('selected_rows', [])
-        st.session_state.selected_events = [
-            row.get('ticker') for row in selected_rows
-        ] if selected_rows else []
-
-        # Show selection status
-        if len(st.session_state.selected_events) > 0:
-            st.caption(f"Selected {len(st.session_state.selected_events)} events: {', '.join(st.session_state.selected_events)}")
-
-        # Add the "Initiate Margins Examination" button
-        if st.button(
-            label="Initiate Margins Examination", 
-            type="primary",
-            use_container_width=True,
-            disabled=len(st.session_state.selected_events) == 0,
-            key='examine_button'
-        ):
-            st.success(f"Initiating margins examination for {len(st.session_state.selected_events)} events: {st.session_state.selected_events}")
-
+        
         # Add pagination controls at the bottom
         pagination_col1, pagination_col2, pagination_col3 = st.columns([1, 3, 1])
         
         with pagination_col1:
             # Back button - disabled if we're at the start (no previous cursors)
-            back_disabled = st.session_state.current_cursor_index <= 0
+            back_disabled = st.session_state.current_cursor_index < 0
             if st.button("← Back", 
                         disabled=back_disabled,
                         use_container_width=True):
@@ -370,6 +404,58 @@ def render_events_tab():
                         use_container_width=True):
                 current_cursor = handle_cursor_navigation('next', events_df.attrs.get('cursor'))
                 st.rerun()
+                
+        # Update selected events in session state
+        if grid_response is not None and grid_response.get('selected_rows') is not None and len(grid_response['selected_rows']) > 0:
+            # st.session_state.selected_events = [
+            #     row['ticker'] for row in grid_response['selected_rows']
+            # ]
+            st.session_state.selected_events = [row[1].ticker for row in grid_response['selected_rows'].iterrows()]
+        else:
+            st.session_state.selected_events = []  # Clear selection if nothing is selected
+        # Show selection status
+        num_selected = len(st.session_state.selected_events)
+                
+        # Add the "Initiate Margins Examination" button
+        examine_button = st.button(
+            label="Initiate Margins Examination", 
+            type="primary",
+            use_container_width=True,
+            disabled=(num_selected == 0),
+            key='examine_button'
+        )
+
+        #if num_selected > 0:
+        st.caption(f"Selected {num_selected} events: {', '.join(st.session_state.selected_events)}")
+        if examine_button and num_selected > 0:
+            try:
+                examiner = MarginExaminer() 
+                
+                with st.spinner('Analyzing selected markets...'):
+                    # Run the analysis
+                    results = asyncio.run(examiner.examine_events(st.session_state.selected_events))
+                    
+                    # Display results
+                    st.success("Analysis complete!")
+                    log_debug(results)
+                    for event_ticker, analyses in results.items():
+                        with st.expander(f"Analysis for {event_ticker}"):
+                            for analysis in analyses:
+                                st.markdown(f"### Market: {analysis.market_ticker}")
+                                st.markdown(f"**Current YES Ask:** ${analysis.current_yes_ask:.2f}")
+                                st.markdown(f"**Estimated Probability:** {analysis.estimated_probability:.1%}")
+                                st.markdown(f"**Confidence Score:** {analysis.confidence_score:.1%}")
+                                st.markdown("**Reasoning:**")
+                                st.write(analysis.reasoning)
+                                st.markdown("**Sources:**")
+                                for source in analysis.sources:
+                                    st.write(f"- {source}")
+                                st.markdown(f"**Recommendation:** {analysis.recommendation}")
+                                st.divider()
+                    
+            except Exception as e:
+                st.error(f"Error during margin examination: {str(e)}")
+
                 
     else:
         st.error("No events found or error occurred.") 

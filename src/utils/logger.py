@@ -15,7 +15,7 @@ class Logger:
         message = " ".join(map(str, args))
         
         # Log to console
-        #print(message, file=self.original_stdout)
+        print(f"\n[{timestamp}] {message}", file=self.original_stdout)
         
         # Log to streamlit session state
         try:

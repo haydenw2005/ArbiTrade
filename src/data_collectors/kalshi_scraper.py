@@ -22,14 +22,6 @@ class KalshiScraper:
             private_key=PRIVATE_KEY_PATH
         )
     
-    def get_event_details(self, event_ticker: str, with_nested_markets: bool = True) -> dict:
-        """Get detailed information about a specific event."""
-        try:
-            return self.client.get_event_details(event_ticker, with_nested_markets)
-        except Exception as e:
-            log_debug(f"Error fetching event details: {e}")
-            return {}
-    
     def get_events(self, 
                   limit: int = 100, 
                   status: str = "open", 
@@ -58,12 +50,6 @@ class KalshiScraper:
             
             # Process markets data if available
             if 'markets' in df.columns:
-                # Add market count before any other processing
-                df['market_count'] = df['markets'].apply(lambda x: len(x) if x else 0)
-                
-                # Format market count as integer
-                df['market_count'] = df['market_count'].astype(int)
-                
                 #Extract market data
                 df['yes_bid'] = df['markets'].apply(
                     lambda x: x[0].get('yes_bid', None) if x and len(x) > 0 else None
@@ -119,10 +105,9 @@ class KalshiScraper:
             # Select final columns
             columns = [
                 'event_ticker', 'title', 'category', 
-                'markets',  # Add markets column to keep the raw data
-                'market_count', 'betting_line', 'implied_prob',
+                #'betting_line', 'implied_prob',
                 'market_value', 'volume', 'liquidity',
-                'yes_bid', 'no_bid', 'last_price'
+                #'yes_bid', 'no_bid', 'last_price'
             ]
             columns = [col for col in columns if col in df.columns]
             
@@ -139,7 +124,7 @@ class KalshiScraper:
             
             df = pd.DataFrame(markets_data.get('markets', []))
             if df.empty:
-                print("No markets data received")
+                log_debug("No markets data received")
                 return df
             
             # Select relevant columns
@@ -192,8 +177,33 @@ class KalshiScraper:
             return filtered_df
             
         except Exception as e:
-            print(f"Error fetching Kalshi markets: {e}")
+            log_debug(f"Error fetching Kalshi markets: {e}")
             return pd.DataFrame()
+    
+    def get_event_details(self, event_ticker: str) -> dict:
+        """
+        Fetch detailed information about a specific event by its ticker.
+        
+        Args:
+            event_ticker (str): The ticker symbol of the event
+            
+        Returns:
+            dict: Detailed event information including markets and other metadata
+        """
+        try:
+            log_debug(f"Fetching details for event: {event_ticker}")
+            response = self.client.get_event(event_ticker)
+            
+            if not response:
+                log_debug(f"No data received for event: {event_ticker}")
+                return {}
+                
+            log_debug(f"Successfully retrieved details for event: {event_ticker}")
+            return response
+            
+        except Exception as e:
+            log_debug(f"Error fetching event details for {event_ticker}: {e}")
+            return {}
         
         
         
