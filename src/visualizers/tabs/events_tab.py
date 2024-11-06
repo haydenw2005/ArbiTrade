@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from typing import List
+from typing import List, Dict
 from st_aggrid import AgGrid, GridOptionsBuilder
 from st_aggrid.grid_options_builder import GridOptionsBuilder
 import asyncio
@@ -9,6 +9,7 @@ from src.visualizers.components.api_parameters import render_api_parameters
 from src.data_collectors.kalshi_scraper import KalshiScraper
 from src.utils.logger import log_debug
 from src.research_tools.margin_examiner import MarginExaminer
+from src.research_tools.margin_schemas import MarginAnalysis
 
 def convert_currency_to_float(value):
     """Convert currency string to float value."""
@@ -198,6 +199,7 @@ def render_events_tab():
         # Convert volume and market_value directly to floats
         events_df['market_value'] = events_df['market_value'].apply(convert_currency_to_float)
         events_df['volume'] = events_df['volume'].apply(convert_currency_to_float)
+        events_df['liquidity'] = events_df['liquidity'].apply(convert_currency_to_float)
         
         # Calculate total markets before filtering
         total_markets = events_df['market_count'].sum() if 'market_count' in events_df.columns else 0
@@ -419,7 +421,7 @@ def render_events_tab():
         # Add the "Initiate Margins Examination" button
         examine_button = st.button(
             label="Initiate Margins Examination", 
-            type="primary",
+            type="secondary",
             use_container_width=True,
             disabled=(num_selected == 0),
             key='examine_button'
@@ -437,25 +439,214 @@ def render_events_tab():
                     
                     # Display results
                     st.success("Analysis complete!")
-                    log_debug(results)
-                    for event_ticker, analyses in results.items():
-                        with st.expander(f"Analysis for {event_ticker}"):
-                            for analysis in analyses:
-                                st.markdown(f"### Market: {analysis.market_ticker}")
-                                st.markdown(f"**Current YES Ask:** ${analysis.current_yes_ask:.2f}")
-                                st.markdown(f"**Estimated Probability:** {analysis.estimated_probability:.1%}")
-                                st.markdown(f"**Confidence Score:** {analysis.confidence_score:.1%}")
-                                st.markdown("**Reasoning:**")
-                                st.write(analysis.reasoning)
-                                st.markdown("**Sources:**")
-                                for source in analysis.sources:
-                                    st.write(f"- {source}")
-                                st.markdown(f"**Recommendation:** {analysis.recommendation}")
-                                st.divider()
                     
+                    # First show the summary grid
+                    st.markdown("### 📊 Analysis Summary")
+                    st.markdown("Click on the 'View' buttons to see detailed information.")
+                    summary_grid = create_analysis_summary_grid(results)
+                    if summary_grid is None:
+                        st.warning("No analysis results to display in summary.")
+                    
+                    # Then show the detailed analyses using tabs instead of expanders
+                    st.markdown("### 📑 Detailed Analysis")
+                    
+                    # Create tabs for each event
+                    if results:
+                        event_tabs = st.tabs(list(results.keys()))
+                        
+                        # Display analyses for each event in its tab
+                        for event_tab, (event_ticker, analyses) in zip(event_tabs, results.items()):
+                            with event_tab:
+                                # Create columns for analyses to show them side by side
+                                if analyses:
+                                    cols = st.columns(min(2, len(analyses)))  # Show max 2 analyses per row
+                                    for i, analysis in enumerate(analyses):
+                                        col_idx = i % 2  # Alternate between columns
+                                        with cols[col_idx]:
+                              
+                                            
+                                            # Market info
+                                            st.markdown(f"#### Market: {analysis.market_ticker}")
+                                            st.markdown(f"**Current YES Ask:** ${analysis.current_yes_ask:.2f}")
+                                            st.markdown(f"**Estimated Probability:** {analysis.estimated_probability:.1%}")
+                                            st.markdown(f"**Confidence Score:** {analysis.confidence_score:.1%}")
+                                            
+                                            # Research context in a container
+                                            with st.container():
+                                                st.markdown("##### 📰 Research Context")
+                                                st.markdown(f"**Market Sentiment:** {analysis.research_context.market_sentiment:+.2f}")
+                                                
+                                                # Collapsible sections using st.expander
+                                                with st.expander("📝 Research Summary"):
+                                                    st.write(analysis.research_context.summary)
+                                                
+                                                with st.expander("🔑 Key Points"):
+                                                    for point in analysis.research_context.key_points:
+                                                        st.write(f"• {point}")
+                                                
+                                                with st.expander("📚 News Sources"):
+                                                    for article in analysis.research_context.articles:
+                                                        st.markdown(f"**[{article.title}]({article.url})**")
+                                                        st.caption(f"Source: {article.source_name} | Published: {article.published_at}")
+                                                        if article.description:
+                                                            st.write(article.description)
+                                                        st.markdown("---")
+                                        
+                                                # Analysis and recommendation
+                                                with st.container():
+                                                    with st.expander("🎯 View Reasoning"):
+                                                        st.write(analysis.reasoning)
+                                                        st.markdown("**Sources:**")
+                                                        for source in analysis.sources:
+                                                            st.write(f"• {source}")
+                                        
+                                                st.markdown(f"**Recommendation:** {analysis.recommendation}")
+                                    
+                                    st.markdown('</div>', unsafe_allow_html=True)
+                                    
+                                    # Start new row after every 2 analyses
+                                    if col_idx == 1:
+                                        st.markdown("---")
+                                else:
+                                    st.info("No analyses available for this event.")
+                                    
             except Exception as e:
                 st.error(f"Error during margin examination: {str(e)}")
 
                 
     else:
         st.error("No events found or error occurred.") 
+
+def create_analysis_summary_grid(results: Dict[str, List[MarginAnalysis]]):
+    """Create a summary grid of all analysis results"""
+    # Flatten the results into a list of dictionaries for the grid
+    summary_data = []
+    for event_ticker, analyses in results.items():
+        for analysis in analyses:
+            summary_data.append({
+                'Event Ticker': event_ticker,
+                'Market Ticker': analysis.market_ticker,
+                'Current YES Ask': f"${analysis.current_yes_ask:.2f}",
+                'Estimated Prob': f"{analysis.estimated_probability:.1%}",
+                'Confidence': f"{analysis.confidence_score:.1%}",
+                'Sentiment': f"{analysis.research_context.market_sentiment:+.2f}",
+                'Recommendation': analysis.recommendation,
+                'Reasoning': analysis.reasoning,  # Will be shown in popup
+                'Research Summary': analysis.research_context.summary,  # Will be shown in popup
+                'Key Points': '\n• ' + '\n• '.join(analysis.research_context.key_points),  # Will be shown in popup
+                'News Count': len(analysis.research_context.articles)
+            })
+    
+    if not summary_data:
+        return None
+        
+    df = pd.DataFrame(summary_data)
+    
+    gb = GridOptionsBuilder.from_dataframe(df)
+    
+    # Configure columns
+    gb.configure_column('Event Ticker', pinned='left', width=120)
+    gb.configure_column('Market Ticker', width=120)
+    gb.configure_column('Current YES Ask', width=120)
+    gb.configure_column('Estimated Prob', width=120)
+    gb.configure_column('Confidence', width=120)
+    gb.configure_column('Sentiment', width=100)
+    gb.configure_column('Recommendation', width=140)
+    
+    # Configure popup/expandable columns
+    gb.configure_column(
+        'Reasoning',
+        width=120,
+        cellRenderer="""
+        function(params) {
+            return params.value ? 
+                '<div class="expand-trigger" title="Click to view full text">📝 View Analysis</div>' : 
+                '';
+        }
+        """,
+        cellStyle={'cursor': 'pointer'},
+        onCellClicked="""
+        function(params) {
+            const text = params.value;
+            if (text) {
+                const modal = document.createElement('div');
+                modal.style = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;padding:20px;max-width:80%;max-height:80%;overflow:auto;z-index:1000;border-radius:8px;box-shadow:0 0 15px rgba(0,0,0,0.2);';
+                modal.innerHTML = `<h3>Detailed Analysis</h3><p style="white-space:pre-wrap;">${text}</p><button onclick="this.parentElement.remove()" style="position:absolute;top:10px;right:10px;border:none;background:none;font-size:20px;cursor:pointer;">×</button>`;
+                document.body.appendChild(modal);
+            }
+        }
+        """
+    )
+    
+    gb.configure_column(
+        'Research Summary',
+        width=120,
+        cellRenderer="""
+        function(params) {
+            return params.value ? 
+                '<div class="expand-trigger" title="Click to view research summary">📚 View Research</div>' : 
+                '';
+        }
+        """,
+        cellStyle={'cursor': 'pointer'},
+        onCellClicked="""
+        function(params) {
+            const text = params.value;
+            if (text) {
+                const modal = document.createElement('div');
+                modal.style = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;padding:20px;max-width:80%;max-height:80%;overflow:auto;z-index:1000;border-radius:8px;box-shadow:0 0 15px rgba(0,0,0,0.2);';
+                modal.innerHTML = `<h3>Research Summary</h3><p style="white-space:pre-wrap;">${text}</p><button onclick="this.parentElement.remove()" style="position:absolute;top:10px;right:10px;border:none;background:none;font-size:20px;cursor:pointer;">×</button>`;
+                document.body.appendChild(modal);
+            }
+        }
+        """
+    )
+    
+    gb.configure_column(
+        'Key Points',
+        width=120,
+        cellRenderer="""
+        function(params) {
+            return params.value ? 
+                '<div class="expand-trigger" title="Click to view key points">🔑 View Points</div>' : 
+                '';
+        }
+        """,
+        cellStyle={'cursor': 'pointer'},
+        onCellClicked="""
+        function(params) {
+            const text = params.value;
+            if (text) {
+                const modal = document.createElement('div');
+                modal.style = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;padding:20px;max-width:80%;max-height:80%;overflow:auto;z-index:1000;border-radius:8px;box-shadow:0 0 15px rgba(0,0,0,0.2);';
+                modal.innerHTML = `<h3>Key Points</h3><p style="white-space:pre-wrap;">${text}</p><button onclick="this.parentElement.remove()" style="position:absolute;top:10px;right:10px;border:none;background:none;font-size:20px;cursor:pointer;">×</button>`;
+                document.body.appendChild(modal);
+            }
+        }
+        """
+    )
+    
+    gb.configure_column('News Count', width=100)
+    
+    # Enable sorting and filtering
+    gb.configure_default_column(
+        sorteable=True,
+        filterable=True,
+        resizable=True
+    )
+    
+    grid_options = gb.build()
+    
+    return AgGrid(
+        df,
+        gridOptions=grid_options,
+        allow_unsafe_jscode=True,
+        custom_css={
+            ".expand-trigger:hover": {
+                "text-decoration": "underline",
+                "color": "#1f77b4"
+            }
+        },
+        height=500,
+        theme='streamlit'
+    )

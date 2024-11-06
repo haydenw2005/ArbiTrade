@@ -13,8 +13,8 @@ def render_logs_tab():
         if st.button("Clear Log"):
             st.session_state.debug_logs = []
     
-    # Display logs in reverse chronological order with expanders
-    for i, log in enumerate(reversed(st.session_state.debug_logs)):
+    # Display top 100 logs in reverse chronological order with expanders
+    for i, log in enumerate(reversed(st.session_state.debug_logs[-min(100, len(st.session_state.debug_logs)):])):
         # Create a preview of the log message (first 50 chars)
         preview = log[:display_length] + "..." if len(log) > display_length else log
         

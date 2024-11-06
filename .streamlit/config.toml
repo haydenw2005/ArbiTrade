@@ -1,5 +1,6 @@
 [theme]
-primaryColor = "#00A86B"  # Cool money green
+# Start of Selection
+primaryColor = "#e5383b"  # Standard green
 backgroundColor = "#0E1117"  # Dark background
 secondaryBackgroundColor = "#262730"  # Slightly lighter dark background
 textColor = "#FFFFFF"  # White text for contrast

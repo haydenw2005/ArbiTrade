@@ -50,6 +50,9 @@ class KalshiScraper:
             
             # Process markets data if available
             if 'markets' in df.columns:
+                # Add market_count
+                df['market_count'] = df['markets'].apply(lambda x: len(x) if x else 0)
+                
                 #Extract market data
                 df['yes_bid'] = df['markets'].apply(
                     lambda x: x[0].get('yes_bid', None) if x and len(x) > 0 else None
@@ -104,10 +107,13 @@ class KalshiScraper:
             
             # Select final columns
             columns = [
-                'event_ticker', 'title', 'category', 
-                #'betting_line', 'implied_prob',
-                'market_value', 'volume', 'liquidity',
-                #'yes_bid', 'no_bid', 'last_price'
+                'event_ticker', 
+                'title', 
+                'category', 
+                'market_count', 
+                'market_value', 
+                'volume', 
+                'liquidity',
             ]
             columns = [col for col in columns if col in df.columns]
             

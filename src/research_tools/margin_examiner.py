@@ -1,28 +1,29 @@
 from typing import List, Dict, Any
 import openai
-from dataclasses import dataclass
 import asyncio
+import json
 from src.data_collectors.kalshi_scraper import KalshiScraper
 from src.utils.logger import log_debug
 from config.settings import OPENAI_API_KEY, MAX_CONCURRENT_ANALYSES, CONFIDENCE_THRESHOLD
-
-@dataclass
-class MarginAnalysis:
-    market_ticker: str
-    current_yes_ask: float
-    estimated_probability: float
-    confidence_score: float
-    reasoning: str
-    sources: List[str]
-    recommendation: str
+from src.research_tools.margin_schemas import (
+    AIAnalysisResponse,
+    MarginAnalysis,
+    MARKET_ANALYSIS_SCHEMA,
+    SYSTEM_PROMPT,
+    generate_market_analysis_prompt,
+    NewsArticle,
+    ResearchContext
+)
+from src.research_tools.news_service import NewsService
 
 class MarginExaminer:
-    def __init__(self):
+    def __init__(self):        
         if not OPENAI_API_KEY:
             raise ValueError("OpenAI API key not found in environment variables")
         log_debug(f"Initializing MarginExaminer with API key: {OPENAI_API_KEY[:8]}...")
         self.openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
         self.kalshi_scraper = KalshiScraper()
+        self.news_service = NewsService()
         self.max_concurrent = MAX_CONCURRENT_ANALYSES
         self.confidence_threshold = CONFIDENCE_THRESHOLD
         
@@ -30,53 +31,155 @@ class MarginExaminer:
         """Analyze a single market using AI and web research."""
         
         log_debug(f"Starting market analysis for {market_data.get('ticker', 'unknown market')}")
-        log_debug(f"Market data received: {market_data.keys()}")
         
         try:
-            # Construct the prompt for the AI
-            prompt = f"""
-            Analyze this prediction market:
-            Title: {market_data.get('title', 'Unknown Title')}
-            Current YES Ask Price: ${market_data.get('yes_ask', 0)/100:.2f}
-            Rules: {market_data.get('rules_primary', 'No rules available')}
-            
-            Please analyze the probability of this event occurring based on available data and research.
-            Return your analysis in the following format:
-            - Estimated probability: (0-1)
-            - Confidence score: (0-1)
-            - Reasoning: (detailed explanation)
-            - Sources: (list of sources used)
-            - Recommendation: (whether the current ask price represents an opportunity)
-            """
-            
-            log_debug("Sending request to OpenAI API...")
-            
-            try:
-                response = await self.openai_client.chat.completions.create(
-                    model="gpt-4-turbo-preview",
-                    messages=[
-                        {"role": "system", "content": "You are a financial analyst specializing in prediction markets."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7
+            # Create a coroutine for the OpenAI query construction
+            async def construct_search_query():
+                return await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self.openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are an expert at constructing search queries for news articles. "
+                                    "Your task is to generate three broad keywords that will yield relevant articles. "
+                                    "Avoid exact phrases or highly specific terms. Each keyword should be distinct and broad, "
+                                    "forming a flexible search query string."
+                                )
+                            },
+                            {
+                                "role": "user",
+                                "content": f"""
+                                Create a search query for news articles about the topic. Do not make it specific to the market, but to current climate and events:
+                                
+                                Title: {market_data.get('title', '')}
+                                Category: {market_data.get('category', '')}
+                                Rules: {market_data.get('rules_primary', '')}
+                                """
+                            }
+                        ],
+                        functions=[
+                            {
+                                "name": "construct_search_query",
+                                "description": "Construct an optimal search query for news articles",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "search_query": {
+                                            "type": "string",
+                                            "description": "A flexible search query string with three broad keywords"
+                                        },
+                                    },
+                                    "required": ["search_query", "reasoning"]
+                                }
+                            }
+                        ],
+                        function_call={"name": "construct_search_query"}
+                    )
                 )
-                log_debug(f"Received response from OpenAI: {response.choices[0].message.content[:100]}...")
-                
-            except Exception as api_error:
-                log_debug(f"OpenAI API Error: {str(api_error)}")
-                raise
+            # Create a coroutine for the news analysis
+            async def analyze_news(articles: List[NewsArticle]):
+                return await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self.openai_client.chat.completions.create(
+                        model="gpt-4-turbo-preview",
+                        messages=[
+                            {"role": "system", "content": "Analyze these news articles for relevance to the prediction market."},
+                            {"role": "user", "content": f"Market: {market_data.get('title')}\nArticles:\n" + 
+                             ("\n".join([f"- {a.title} ({a.source_name}): {a.description}" for a in articles]) 
+                              if articles else "No relevant articles found.")}
+                        ],
+                        functions=[{
+                            "name": "analyze_news",
+                            "description": "Analyze news articles and provide research context",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "summary": {
+                                        "type": "string",
+                                        "description": "Summary of relevant news findings"
+                                    },
+                                    "key_points": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Key points from the research"
+                                    },
+                                    "market_sentiment": {
+                                        "type": "number",
+                                        "description": "Overall market sentiment (-1 to +1)",
+                                        "minimum": -1,
+                                        "maximum": 1
+                                    }
+                                },
+                                "required": ["summary", "key_points", "market_sentiment"]
+                            }
+                        }],
+                        function_call={"name": "analyze_news"}
+                    )
+                )
+
+            # Create a coroutine for the final market analysis
+            async def analyze_market_with_research(research_context: ResearchContext):
+                return await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self.openai_client.chat.completions.create(
+                        model="gpt-4-turbo-preview",
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": generate_market_analysis_prompt(market_data, research_context.articles)},
+                            {"role": "assistant", "content": f"Research Summary:\n{research_context.summary}\n\n" +
+                             f"Key Points:\n" + "\n".join([f"- {p}" for p in research_context.key_points])}
+                        ],
+                        functions=[MARKET_ANALYSIS_SCHEMA],
+                        function_call={"name": "analyze_prediction_market"}
+                    )
+                )
+
+            # Execute the pipeline
+            query_response = await construct_search_query()
+            query_data = json.loads(query_response.choices[0].message.function_call.arguments)
+            search_query = query_data['search_query']
+            log_debug(f"Generated search query: {search_query}")
             
-            analysis = self._parse_ai_response(response.choices[0].message.content)
-            log_debug(f"Parsed analysis: {analysis}")
+            news_articles = await self.news_service.get_relevant_articles(search_query)
+            log_debug(f"Found {len(news_articles)} relevant news articles")
+            
+            news_analysis_response = await analyze_news(news_articles)
+            news_analysis = json.loads(news_analysis_response.choices[0].message.function_call.arguments)
+            
+            research_context = ResearchContext(
+                articles=news_articles,
+                summary=news_analysis['summary'],
+                key_points=news_analysis['key_points'],
+                market_sentiment=news_analysis['market_sentiment']
+            )
+            
+            market_analysis_response = await analyze_market_with_research(research_context)
+            analysis_dict = json.loads(market_analysis_response.choices[0].message.function_call.arguments)
+            
+            complete_analysis = {
+                **analysis_dict,
+                "research_context": {
+                    "articles": [article.dict() for article in news_articles],
+                    "summary": research_context.summary,
+                    "key_points": research_context.key_points,
+                    "market_sentiment": research_context.market_sentiment
+                }
+            }
+            
+            validated_response = AIAnalysisResponse(**complete_analysis)
             
             result = MarginAnalysis(
                 market_ticker=market_data.get('ticker', 'unknown'),
                 current_yes_ask=market_data.get('yes_ask', 0)/100,
-                estimated_probability=analysis['estimated_probability'],
-                confidence_score=analysis['confidence_score'],
-                reasoning=analysis['reasoning'],
-                sources=analysis['sources'],
-                recommendation=analysis['recommendation']
+                estimated_probability=validated_response.estimated_probability,
+                confidence_score=validated_response.confidence_score,
+                reasoning=validated_response.reasoning,
+                sources=validated_response.sources,
+                recommendation=validated_response.recommendation,
+                research_context=validated_response.research_context
             )
             
             log_debug(f"Analysis complete for market {market_data.get('ticker')}")
@@ -88,48 +191,6 @@ class MarginExaminer:
             import traceback
             log_debug(f"Traceback: {traceback.format_exc()}")
             raise
-    
-    def _parse_ai_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse the AI response into structured data."""
-        log_debug(f"Parsing AI response: {response_text[:100]}...")
-        
-        lines = response_text.split('\n')
-        analysis = {
-            'estimated_probability': 0.5,
-            'confidence_score': 0.8,
-            'reasoning': '',
-            'sources': [],
-            'recommendation': 'HOLD'
-        }
-        
-        current_section = None
-        for line in lines:
-            line = line.strip()
-            if line.startswith('- Estimated probability:'):
-                try:
-                    prob_str = line.split(':')[1].strip().strip('()')
-                    analysis['estimated_probability'] = float(prob_str)
-                except Exception as e:
-                    log_debug(f"Error parsing probability: {str(e)} from line: {line}")
-            elif line.startswith('- Confidence score:'):
-                try:
-                    conf_str = line.split(':')[1].strip().strip('()')
-                    analysis['confidence_score'] = float(conf_str)
-                except Exception as e:
-                    log_debug(f"Error parsing confidence: {str(e)} from line: {line}")
-            elif line.startswith('- Reasoning:'):
-                current_section = 'reasoning'
-            elif line.startswith('- Sources:'):
-                current_section = 'sources'
-            elif line.startswith('- Recommendation:'):
-                analysis['recommendation'] = line.split(':')[1].strip()
-            elif current_section == 'reasoning' and line:
-                analysis['reasoning'] += line + '\n'
-            elif current_section == 'sources' and line.startswith('-'):
-                analysis['sources'].append(line.strip('- '))
-        
-        log_debug(f"Parsed analysis result: {analysis}")
-        return analysis
     
     async def examine_events(self, event_tickers: List[str]) -> Dict[str, List[MarginAnalysis]]:
         """Examine multiple events and their markets."""
@@ -162,17 +223,31 @@ class MarginExaminer:
                     return ticker, []
                 
                 log_debug(f"Found {len(event_data['markets'])} markets for event {ticker}")
-                    
-                market_analyses = []
+                
+                # Create tasks for parallel market analysis
+                market_tasks = []
                 for market in event_data['markets']:
-                    try:
-                        analysis = await self.analyze_market(market)
-                        market_analyses.append(analysis)
-                        log_debug(f"Successfully analyzed market {market.get('ticker', 'unknown')}")
-                    except Exception as e:
-                        log_debug(f"Error analyzing market {market.get('ticker', 'unknown')}: {str(e)}")
-                        continue  # Skip failed market analyses
+                    market_tasks.append(self.analyze_market(market))
+                
+                # Execute all market analyses in parallel
+                try:
+                    market_analyses = await asyncio.gather(*market_tasks, return_exceptions=True)
+                    # Filter out exceptions and log errors
+                    market_analyses = [
+                        analysis for analysis in market_analyses 
+                        if not isinstance(analysis, Exception)
+                    ]
                     
+                    # Log any failed analyses
+                    failed_count = len(market_tasks) - len(market_analyses)
+                    if failed_count > 0:
+                        log_debug(f"Failed to analyze {failed_count} markets for event {ticker}")
+                    
+                    log_debug(f"Successfully analyzed {len(market_analyses)} markets for event {ticker}")
+                except Exception as e:
+                    log_debug(f"Error during parallel market analysis for event {ticker}: {str(e)}")
+                    market_analyses = []
+                
                 log_debug(f"Completed analysis for event {ticker}")
                 return ticker, market_analyses
         
