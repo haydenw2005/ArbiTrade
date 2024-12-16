@@ -8,3 +8,4 @@ lxml = {extras = ["html_clean"], version = "^5.1.0"}
 requests = "^2.31.0"
 python-dotenv = "^1.0.0"
 pymilvus = "^2.4.9"
+snowflake-id = "^1.0.2"

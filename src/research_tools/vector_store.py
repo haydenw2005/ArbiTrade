@@ -8,7 +8,7 @@ import openai
 import asyncio
 from config.settings import OPENAI_API_KEY
 import json
-import uuid
+from snowflake import SnowflakeGenerator
 import re
 
 
@@ -19,6 +19,7 @@ class VectorStore:
         self.collection_name = "news_articles"
         self.embedding_dim = 1536  # OpenAI's text-embedding-3-small dimension
         self.openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        self.id_generator = SnowflakeGenerator(1)  # Initialize Snowflake generator with machine ID 1
         self._ensure_collection()
 
     def _ensure_collection(self):
@@ -99,9 +100,9 @@ class VectorStore:
                 # Convert embedding to the correct format for Milvus
                 embedding_list = embedding.astype(np.float32).tolist()
 
-                # Prepare the article data with a unique UUID as ID
+                # Prepare the article data with a Snowflake ID
                 article_data = {
-                    "id": str(uuid.uuid4()),  # Use UUID for unique identification
+                    "id": next(self.id_generator),  # Generate Snowflake ID
                     "title": article.title,
                     "description": article.description,
                     "url": article.url,

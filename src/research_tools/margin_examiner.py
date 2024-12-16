@@ -84,7 +84,7 @@ class MarginExaminer:
                 return await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: self.openai_client.chat.completions.create(
-                        model="gpt-4-turbo-preview",
+                        model="gpt-4o",
                         messages=[
                             {"role": "system", "content": "Analyze these news articles for relevance to the prediction market."},
                             {"role": "user", "content": f"Market: {market_data.get('title')}\nArticles:\n" + 
@@ -125,7 +125,7 @@ class MarginExaminer:
                 return await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: self.openai_client.chat.completions.create(
-                        model="gpt-4-turbo-preview",
+                        model="gpt-4o",
                         messages=[
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": generate_market_analysis_prompt(market_data, research_context.articles)},
