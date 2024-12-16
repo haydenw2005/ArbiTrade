@@ -1,6 +1,6 @@
 # Arbitrade
 
-Arbitrade is a tool designed to identify inefficiencies in prediction markets by integrating with Kalshi's API, aggregating news, and leveraging advanced AI-driven sentiment analysis. This project utilizes LLMs and vector stores to fetch and store relevant news articles, helping detect undervalued and overvalued prediction markets.
+Arbitrade is a tool designed for identifying inefficiencies in prediction markets by integrating with Kalshi's API, aggregating news, and leveraging advanced AI-driven sentiment analysis. This project utilizes LLMs and vector stores to fetch and store relevant news articles, helping detect undervalued and overvalued prediction markets.
 
 ---
 
