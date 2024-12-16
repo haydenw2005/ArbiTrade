@@ -408,11 +408,10 @@ def render_events_tab():
                 st.rerun()
                 
         # Update selected events in session state
-        if grid_response is not None and grid_response.get('selected_rows') is not None and len(grid_response['selected_rows']) > 0:
-            # st.session_state.selected_events = [
-            #     row['ticker'] for row in grid_response['selected_rows']
-            # ]
-            st.session_state.selected_events = [row[1].ticker for row in grid_response['selected_rows'].iterrows()]
+        if grid_response is not None and grid_response.get('selected_rows') is not None:
+            st.session_state.selected_events = [
+                row['ticker'] for row in grid_response['selected_rows']
+            ]
         else:
             st.session_state.selected_events = []  # Clear selection if nothing is selected
         # Show selection status
